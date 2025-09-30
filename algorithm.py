@@ -3,6 +3,7 @@ import numpy as np
 from sklearn.neighbors import NearestNeighbors, LocalOutlierFactor
 from sklearn.ensemble import IsolationForest
 import joblib
+import pandas as pd
 
 
 def train_knn(X: np.ndarray, k: int = 3, model_path: str = "knn_model.pkl"):
@@ -31,6 +32,25 @@ def train_lof(X: np.ndarray, n_neighbors: int = 20, contamination: float = 0.1, 
     lof.fit(X)
     joblib.dump(lof, model_path)
     print(f"[+] LOF trained and saved to {model_path}")
+    return lof
+
+def process_lof(data_csv, n_neighbors=20, contamination=0.1, model_path="lof_model.pkl"):
+    """
+    Đọc CSV, lấy dữ liệu numeric và train LOF.
+    """
+    # Đọc CSV
+    df = pd.read_csv(data_csv)
+
+    # Lấy toàn bộ cột số (loại bỏ text)
+    X = df.select_dtypes(include=["int64", "float64"]).values
+
+    if X.shape[0] == 0:
+        raise ValueError("Không có dữ liệu numeric trong CSV để train")
+
+    # Train LOF
+    lof = train_lof(X, n_neighbors=n_neighbors,
+                              contamination=contamination,
+                              model_path=model_path)
     return lof
 
 
