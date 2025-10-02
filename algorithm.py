@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 import numpy as np
-from sklearn.neighbors import NearestNeighbors, LocalOutlierFactor
-from sklearn.ensemble import IsolationForest
-import joblib
 import pandas as pd
+import joblib
+from sklearn.neighbors import NearestNeighbors, LocalOutlierFactor
+from sklearn.ensemble import IsolationForest, RandomForestClassifier
 
 
-def train_knn(X: np.ndarray, k: int = 3, model_path: str = "knn_model.pkl"):
+# ===========================
+# TRAIN FUNCTIONS
+# ===========================
+def train_knn(X: np.ndarray, k: int = 5, model_path: str = "knn_model.pkl"):
     """
-    Train KNN (NearestNeighbors) model.
-    X: numpy array (n_samples, n_features)
-    k: number of neighbors
-    Save .pkl to model path
+    Train KNN (NearestNeighbors).
+    Chỉ dùng cho anomaly detection qua khoảng cách lân cận.
     """
     knn = NearestNeighbors(n_neighbors=k, algorithm="auto")
     knn.fit(X)
@@ -20,41 +21,24 @@ def train_knn(X: np.ndarray, k: int = 3, model_path: str = "knn_model.pkl"):
     return knn
 
 
-def train_lof(X: np.ndarray, n_neighbors: int = 20, contamination: float = 0.1, model_path: str = "lof_model.pkl"):
+def train_lof(X: np.ndarray, n_neighbors: int = 20, contamination: float = 0.1,
+              model_path: str = "lof_model.pkl"):
     """
-    Train Local Outlier Factor (unsupervised anomaly detection).
+    Train LOF (Local Outlier Factor).
     """
     lof = LocalOutlierFactor(
         n_neighbors=n_neighbors,
         contamination=contamination,
-        novelty=True 
+        novelty=True  # Cho phép dùng predict sau khi train
     )
     lof.fit(X)
     joblib.dump(lof, model_path)
     print(f"[+] LOF trained and saved to {model_path}")
     return lof
 
-def process_lof(data_csv, n_neighbors=20, contamination=0.1, model_path="lof_model.pkl"):
-    """
-    Đọc CSV, lấy dữ liệu numeric và train LOF.
-    """
-    # Đọc CSV
-    df = pd.read_csv(data_csv)
 
-    # Lấy toàn bộ cột số (loại bỏ text)
-    X = df.select_dtypes(include=["int64", "float64"]).values
-
-    if X.shape[0] == 0:
-        raise ValueError("Không có dữ liệu numeric trong CSV để train")
-
-    # Train LOF
-    lof = train_lof(X, n_neighbors=n_neighbors,
-                              contamination=contamination,
-                              model_path=model_path)
-    return lof
-
-
-def train_isolation_forest(X: np.ndarray, contamination: float = 0.1, model_path: str = "isoforest_model.pkl"):
+def train_isolation_forest(X: np.ndarray, contamination: float = 0.1,
+                           model_path: str = "isoforest_model.pkl"):
     """
     Train Isolation Forest.
     """
@@ -65,25 +49,155 @@ def train_isolation_forest(X: np.ndarray, contamination: float = 0.1, model_path
     )
     iso.fit(X)
     joblib.dump(iso, model_path)
-    print(f"[+] Isolation Forest trained and saved to {model_path}")
+    print(f"[+] IsolationForest trained and saved to {model_path}")
     return iso
 
 
+def train_random_forest(X: np.ndarray, y: np.ndarray,
+                        model_path: str = "randforest_model.pkl"):
+    """
+    Train Random Forest supervised classification.
+    y phải là label (vd: 0/1 hoặc BENIGN/PORTMAP).
+    """
+    rf = RandomForestClassifier(n_estimators=100, random_state=42)
+    rf.fit(X, y)
+    joblib.dump(rf, model_path)
+    print(f"[+] RandomForest trained and saved to {model_path}")
+    return rf
+
+def process_isolation_forest(data_csv, contamination=0.1, model_path="isoforest_model.pkl"):
+    """
+    Đọc CSV, lấy feature numeric, train Isolation Forest.
+    """
+    df = pd.read_csv(data_csv)
+
+    feature_columns = [
+        "FlowDuration",
+        "FlowIATMean",
+        "FlowPktsPerSec",
+        "FlowBytesPerSec",
+        "PktLenMean"
+    ]
+
+    if not all(col in df.columns for col in feature_columns):
+        missing = [c for c in feature_columns if c not in df.columns]
+        raise ValueError(f"[ERROR] CSV thiếu cột: {missing}")
+
+    X = df.loc[:, feature_columns].values.astype(float)
+    if X.shape[0] == 0:
+        raise ValueError("Không có dữ liệu numeric trong CSV để train")
+
+    X_log = np.log2(X + 1)
+
+    iso = train_isolation_forest(X_log, contamination=contamination, model_path=model_path)
+    return iso
+
+
+def process_random_forest(data_csv, label_col="Label", model_path="randforest_model.pkl"):
+    """
+    Đọc CSV, lấy feature + label, train Random Forest (supervised classification).
+    label_col: tên cột chứa nhãn (vd: "Label" với BENIGN / PORTMAP).
+    """
+    df = pd.read_csv(data_csv)
+
+    feature_columns = [
+        "FlowDuration",
+        "FlowIATMean",
+        "FlowPktsPerSec",
+        "FlowBytesPerSec",
+        "PktLenMean"
+    ]
+
+    if not all(col in df.columns for col in feature_columns + [label_col]):
+        missing = [c for c in feature_columns + [label_col] if c not in df.columns]
+        raise ValueError(f"[ERROR] CSV thiếu cột: {missing}")
+
+    X = df.loc[:, feature_columns].values.astype(float)
+    y = df[label_col].values
+
+    if X.shape[0] == 0:
+        raise ValueError("Không có dữ liệu numeric trong CSV để train")
+
+    X_log = np.log2(X + 1)
+
+    rf = train_random_forest(X_log, y, model_path=model_path)
+    return rf
+
+# ===========================
+# PREDICT FUNCTIONS
+# ===========================
+def predict_with_score(model, X: np.ndarray, threshold: float = None):
+    """
+    Trả về (labels, scores) cho mọi model.
+    - LOF & IsolationForest: dùng decision_function
+    - KNN: dùng khoảng cách trung bình
+    - RandomForest: dùng predict_proba nếu có
+    """
+    # --- LOF ---
+    if isinstance(model, LocalOutlierFactor):
+        labels = model.predict(X)
+        scores = model.decision_function(X)
+        return labels, scores
+
+    # --- IsolationForest ---
+    elif isinstance(model, IsolationForest):
+        labels = model.predict(X)
+        scores = model.decision_function(X)
+        return labels, scores
+
+    # --- KNN ---
+    elif isinstance(model, NearestNeighbors):
+        distances, _ = model.kneighbors(X)
+        scores = distances.mean(axis=1)  # score = khoảng cách trung bình
+        if threshold is None:
+            threshold = np.percentile(scores, 95)  # lấy ngưỡng 95%
+        labels = np.where(scores > threshold, -1, 1)
+        return labels, scores
+
+    # --- RandomForest (supervised) ---
+    elif isinstance(model, RandomForestClassifier):
+        probs = model.predict_proba(X)
+        labels = model.predict(X)
+        # Score = xác suất của class dự đoán
+        scores = np.max(probs, axis=1)
+        return labels, scores
+
+    else:
+        raise ValueError(f"Unsupported model type: {type(model)}")
+
+
+# ===========================
+# UTILITIES
+# ===========================
 def load_model(path: str):
-    """Load model from file joblib"""
+    """Load model từ file .pkl"""
     return joblib.load(path)
 
 
-def predict(model, X: np.ndarray):
+def process_lof(data_csv, n_neighbors=20, contamination=0.1,
+                model_path="lof_model.pkl"):
     """
-    Run predict to anomaly detection.
-    - With LOF and IsolationForest: model.predict(X) return {1: normal, -1: anomaly}
-    - With KNN: Define threshold.
+    Đọc CSV, lấy feature, train LOF (dùng log2 transform).
     """
-    if hasattr(model, "predict"):
-        return model.predict(X)
-    elif isinstance(model, NearestNeighbors):
-        distances, _ = model.kneighbors(X)
-        return distances
-    else:
-        raise ValueError("Unsupported model type")
+    df = pd.read_csv(data_csv)
+    feature_columns = [
+        "FlowDuration",
+        "FlowIATMean",
+        "FlowPktsPerSec",
+        "FlowBytesPerSec",
+        "PktLenMean"
+    ]
+
+    if not all(col in df.columns for col in feature_columns):
+        missing = [c for c in feature_columns if c not in df.columns]
+        raise ValueError(f"[ERROR] CSV thiếu cột: {missing}")
+
+    X = df.loc[:, feature_columns].values.astype(float)
+    if X.shape[0] == 0:
+        raise ValueError("Không có dữ liệu numeric trong CSV để train")
+
+    X_log = np.log2(X + 1)
+
+    lof = train_lof(X_log, n_neighbors=n_neighbors,
+                    contamination=contamination, model_path=model_path)
+    return lof
