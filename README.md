@@ -15,21 +15,9 @@ ssh dongtv@<IP server3>
 cd dtuan/xdp-program
 git branch
 ```
-- Mình đo với các branch sau:
-    + supervised_lof
-    + knn_threshold
-    + random_forest
-    + isolation_forest
-- Để đổi các branch, làm như sau:
 ```bash
-git switch <Tên branch>
+git switch userspace
 ```
-- Thông số thay đổi cho các branch như sau:
-    + supervised_lof: Thay đổi `MAX_FLOW_SAVED` (Từ 200 đến 1000 mỗi lần tăng 200).
-    + knn_threshold: Thay đổi `MAX_FLOW_SAVED` (Từ 200 đến 1000 mỗi lần tăng 200).
-    + random_forest: Thay đổi `MAX_TREES` (Từ 10 đến 60 mỗi lần tăng 10)
-    + isolation_forest: Thay đổi `MAX_TREES` (Từ 10 đến 60 mỗi lần tăng 10)
-- Mỗi lần thay đổi tham số xong hoặc mỗi lần switch branch thì đều phải thực hiện lệnh sau:
 ```bash
 make
 ```
@@ -50,15 +38,22 @@ sudo tcpdump -i eno3
 ```bash
 ./dtuan/run_xdp_program.sh
 ```
+- Chạy test trên userspace ở ô bên trái trên, như sau:
+```bash
+cd userspace_test
+source .venv/bin/active
+sudo taskset -c 1 .venv/bin/python3 main.py --model <model muốn test>
+```
++ NOTE: model ở đây có lof, knn, isoforest, randforest
 - Tiếp theo đến góc phải trên, chạy lệnh sau:
 ```bash
-./scripts_tcpreplay.sh enp1s0f1 pcap/data_portmap.pcap <số pps> 120 cpu_usage_userspace/<Tên branch>_<Tham số điều chỉnh>.log
+./scripts_tcpreplay.sh enp1s0f1 pcap/data_portmap.pcap <số pps> 120 cpu_usage_userspace/<Tên model>.log
 ```
 Số pps thay đổi từ 10000 đến 100000 mỗi lần tăng 10000
 ## Đo mỗi tham số 5 lần
 ## Tóm tắt cách đo như sau:
 1. Đổi branch -> Điều chỉnh tham số -> make
 2. Chạy scripts run_xdp_program
-3. Phát tấn công bằng ./scripts_tcpreplay.sh
-
-Vậy với mỗi thuật toán phải điều chỉnh các tham số như trên, và phát tấn công với số pps khác nhau, lưu ý phải đổi tên file để dễ phân biệt.
+3. Chạy main.py
+4. Phát tấn công bằng ./scripts_tcpreplay.sh
+5. Chờ phát hết tấn công thì làm lại từ bước 2.
