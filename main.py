@@ -5,266 +5,146 @@ import algorithm
 
 import time
 import argparse
+import sys
 
-def lof_run():
-    map_path = "/sys/fs/bpf/eno3/xdp_flow_tracking"
+def parse_flow(flow_str):
+    """
+    Chuyển flow string kiểu '192.168.50.6:54821 -> 72.21.91.29:80 proto=6'
+    thành tuple: (src_ip, src_port, dst_ip, dst_port, proto)
+    """
+    try:
+        parts = flow_str.split("->")
+        src_part = parts[0].strip()
+        dst_part_proto = parts[1].strip()
 
-    buffer_flows = []       # lưu features
-    seen_flows = set()      # lưu key flow đã gặp
-    lof = None
-
-    print("[DEBUG] Waiting for 100 unique flows to train...")
-
-    while True:
-        try:
-            flows = read_flows(map_path)
-        except Exception as e:
-            print(f"[ERROR] Exception in read_flows: {e}")
-            time.sleep(1)
-            continue
-
-        if not flows:
-            print("[DEBUG] No flows in map.")
-            time.sleep(1)
-            continue
-
-        temp_data = []
-        for flow, dp in flows:
-            if lof is None:
-                # lọc flow trùng
-                if flow in seen_flows:
-                    continue
-                seen_flows.add(flow)
-
-            features = [
-                dp.flow_duration,
-                dp.flow_IAT_mean,
-                dp.flow_pkts_per_s,
-                dp.flow_bytes_per_s,
-                dp.pkts_len_mean
-            ]
-            temp_data.append((flow, features))
-
-        # giai đoạn training
-        if lof is None:
-            for _, feat in temp_data:
-                buffer_flows.append(feat)
-
-            if len(buffer_flows) >= 100:
-                print(f"[DEBUG] Collected {len(buffer_flows)} unique flows. Training LOF model...")
-                X_train = np.array(buffer_flows[:100], dtype=float)
-                X_train_log = np.log2(X_train + 1)
-
-                lof = algorithm.train_lof(X_train_log, n_neighbors=20, contamination=0.1)
-                print("[DEBUG] LOF training complete. Now predicting new flows...")
-            else:
-                print(f"[DEBUG] Collected {len(buffer_flows)}/100 unique flows so far...")
-                time.sleep(1)
-                continue
-
-        # giai đoạn predict
+        if "proto=" in dst_part_proto:
+            dst_part, proto_part = dst_part_proto.split("proto=")
+            proto = int(proto_part.strip())
         else:
-            if not temp_data:
-                time.sleep(1)
-                continue
+            dst_part = dst_part_proto
+            proto = None
 
-            X = np.array([feat for _, feat in temp_data], dtype=float)
-            X_log = np.log2(X + 1)
+        src_ip, src_port = src_part.split(":")
+        dst_ip, dst_port = dst_part.split(":")
 
-            labels, scores = algorithm.predict_with_score(lof, X_log)
+        return (src_ip.strip(), int(src_port), dst_ip.strip(), int(dst_port), proto)
+    except Exception as e:
+        print(f"[ERROR] Cannot parse flow '{flow_str}': {e}")
+        return None
 
-            print("\n=== LOF Prediction Results ===")
-            for (flow, _), label, score in zip(temp_data, labels, scores):
-                print(f"{flow:40s} -> {'Outlier' if label == -1 else 'Normal'} (score={score:.4f})")
-            print("=== END ===\n")
 
-        time.sleep(0.1)
-
-def knn_run():
+def run_model(model_name, train_csv=None):
+    """
+    Hàm tổng quát cho tất cả các model
+    """
     map_path = "/sys/fs/bpf/eno3/xdp_flow_tracking"
 
     buffer_flows = []
     seen_flows = set()
-    knn = None
+    printed_flows = set()
+    results = []
 
-    print("[DEBUG] Waiting for 100 unique flows to train (KNN)...")
+    model = None
 
-    while True:
-        try:
-            flows = read_flows(map_path)
-        except Exception as e:
-            print(f"[ERROR] Exception in read_flows: {e}")
-            time.sleep(1)
-            continue
+    if model_name in ["isoforest", "randforest"]:
+        if train_csv is None:
+            raise ValueError("train_csv is required for isoforest or randforest")
+        df = pd.read_csv(train_csv)
+        feature_columns = ["FlowDuration", "FlowIATMean", "FlowPktsPerSec", "FlowBytesPerSec", "PktLenMean"]
+        X_train = df[feature_columns].astype(float).values
+        X_train_log = np.log2(X_train + 1)
 
-        if not flows:
-            print("[DEBUG] No flows in map.")
-            time.sleep(1)
-            continue
+        if model_name == "isoforest":
+            model = algorithm.train_isolation_forest(X_train_log, contamination=0.1)
+            print("[DEBUG] IsolationForest training complete from CSV.")
+        else:  # randforest
+            y_train = df["Label"]
+            model = algorithm.train_random_forest(X_train_log, y_train)
+            print("[DEBUG] RandomForest training complete from CSV.")
+    else:
+        print(f"[DEBUG] Waiting for 100 unique flows to train ({model_name.upper()})...")
 
-        temp_data = []
-        for flow, dp in flows:
-            if knn is None:
-                if flow in seen_flows:
+    try:
+        while True:
+            try:
+                flows = read_flows(map_path)
+            except Exception as e:
+                print(f"[ERROR] Exception in read_flows: {e}")
+                time.sleep(1)
+                continue
+
+            if not flows:
+                time.sleep(0.1)
+                continue
+
+            temp_data = []
+            for flow_str, dp in flows:
+                flow_tuple = parse_flow(flow_str)
+                if flow_tuple is None:
                     continue
-                seen_flows.add(flow)
 
-            features = [
-                dp.flow_duration,
-                dp.flow_IAT_mean,
-                dp.flow_pkts_per_s,
-                dp.flow_bytes_per_s,
-                dp.pkts_len_mean
-            ]
-            temp_data.append((flow, features))
+                if model_name in ["lof", "knn"] and model is None:
+                    if flow_tuple in seen_flows:
+                        continue
+                    seen_flows.add(flow_tuple)
 
-        if knn is None:
-            for _, feat in temp_data:
-                buffer_flows.append(feat)
+                features = [
+                    dp.flow_duration,
+                    dp.flow_IAT_mean,
+                    dp.flow_pkts_per_s,
+                    dp.flow_bytes_per_s,
+                    dp.pkts_len_mean
+                ]
+                temp_data.append((flow_tuple, features))
 
-            if len(buffer_flows) >= 100:
-                print(f"[DEBUG] Collected {len(buffer_flows)} unique flows. Training KNN model...")
-                X_train = np.array(buffer_flows[:100], dtype=float)
-                X_train_log = np.log2(X_train + 1)
+            # Training phase for LOF/KNN
+            if model_name in ["lof", "knn"] and model is None:
+                for _, feat in temp_data:
+                    buffer_flows.append(feat)
 
-                knn = algorithm.train_knn(X_train_log, k=5)
-                print("[DEBUG] KNN training complete. Now predicting new flows...")
-            else:
-                print(f"[DEBUG] Collected {len(buffer_flows)}/100 unique flows so far...")
-                time.sleep(1)
-                continue
-        else:
+                if len(buffer_flows) >= 100:
+                    X_train = np.array(buffer_flows[:100], dtype=float)
+                    X_train_log = np.log2(X_train + 1)
+                    if model_name == "lof":
+                        model = algorithm.train_lof(X_train_log, n_neighbors=20, contamination=0.1)
+                    else:
+                        model = algorithm.train_knn(X_train_log, k=5)
+                    print(f"[DEBUG] {model_name.upper()} training complete. Now predicting new flows...")
+                else:
+                    print(f"[DEBUG] Collected {len(buffer_flows)}/100 unique flows so far...")
+                    time.sleep(1)
+                    continue
+
             if not temp_data:
-                time.sleep(1)
+                time.sleep(0.1)
                 continue
 
+            # Prediction
             X = np.array([feat for _, feat in temp_data], dtype=float)
             X_log = np.log2(X + 1)
 
-            labels, scores = algorithm.predict_with_score(knn, X_log)
+            labels, scores = algorithm.predict_with_score(model, X_log)
 
-            print("\n=== KNN Prediction Results ===")
-            for (flow, _), label, score in zip(temp_data, labels, scores):
-                print(f"{flow:40s} -> {'Outlier' if label == -1 else 'Normal'} (score={score:.4f})")
+            print(f"\n=== {model_name.upper()} Prediction Results ===")
+            for (flow_tuple, _), label, score in zip(temp_data, labels, scores):
+                if flow_tuple not in printed_flows:
+                    src_ip, src_port, dst_ip, dst_port, proto = flow_tuple
+                    print(f"{src_ip}:{src_port} -> {dst_ip}:{dst_port} proto={proto} -> {'Outlier' if label==-1 else 'Normal'} (score={score:.4f})")
+                    printed_flows.add(flow_tuple)
+                    results.append({
+                        "Flow": f"{src_ip},{src_port},{dst_ip},{dst_port},{proto}",
+                        "Label": "Outlier" if label == -1 else "Normal",
+                        "Score": score
+                    })
             print("=== END ===\n")
+            time.sleep(0.1)
 
-        time.sleep(0.1)
-
-
-def isoforest_run(csv_path="train_data.csv"):
-    map_path = "/sys/fs/bpf/eno3/xdp_flow_tracking"
-
-    # Chọn đúng cột feature numeric
-    feature_columns = [
-        "FlowDuration",
-        "FlowIATMean",
-        "FlowPktsPerSec",
-        "FlowBytesPerSec",
-        "PktLenMean"
-    ]
-
-    df = pd.read_csv(csv_path)
-
-    # Lọc chỉ lấy cột numeric
-    X_train = df[feature_columns].astype(float).values
-    X_train_log = np.log2(X_train + 1)
-
-    iso = algorithm.train_isolation_forest(X_train_log, contamination=0.1)
-    print("[DEBUG] IsolationForest training complete from CSV.")
-
-    # Loop predict real-time flows
-    while True:
-        try:
-            flows = read_flows(map_path)
-        except Exception as e:
-            print(f"[ERROR] Exception in read_flows: {e}")
-            time.sleep(1)
-            continue
-
-        if not flows:
-            print("[DEBUG] No flows in map.")
-            time.sleep(1)
-            continue
-
-        temp_data = []
-        for flow, dp in flows:
-            features = [
-                dp.flow_duration,
-                dp.flow_IAT_mean,
-                dp.flow_pkts_per_s,
-                dp.flow_bytes_per_s,
-                dp.pkts_len_mean
-            ]
-            temp_data.append((flow, features))
-
-        X = np.array([feat for _, feat in temp_data], dtype=float)
-        X_log = np.log2(X + 1)
-
-        labels, scores = algorithm.predict_with_score(iso, X_log)
-
-        print("\n=== IsolationForest Prediction Results ===")
-        for (flow, _), label, score in zip(temp_data, labels, scores):
-            print(f"{flow:40s} -> {'Outlier' if label == -1 else 'Normal'} (score={score:.4f})")
-        print("=== END ===\n")
-
-        time.sleep(0.1)
-
-
-def randforest_run(csv_path="train_data.csv"):
-    map_path = "/sys/fs/bpf/eno3/xdp_flow_tracking"
-
-    feature_columns = [
-        "FlowDuration",
-        "FlowIATMean",
-        "FlowPktsPerSec",
-        "FlowBytesPerSec",
-        "PktLenMean"
-    ]
-    label_column = "Label"
-    df = pd.read_csv(csv_path)
-    X_train = df[feature_columns].astype(float).values
-    y_train = df[label_column]
-    X_train_log = np.log2(X_train + 1)
-
-    rf = algorithm.train_random_forest(X_train_log, y_train)
-    print("[DEBUG] RandomForest training complete from CSV.")
-
-    # Loop predict real-time flows
-    while True:
-        try:
-            flows = read_flows(map_path)
-        except Exception as e:
-            print(f"[ERROR] Exception in read_flows: {e}")
-            time.sleep(1)
-            continue
-
-        if not flows:
-            print("[DEBUG] No flows in map.")
-            time.sleep(1)
-            continue
-
-        temp_data = []
-        for flow, dp in flows:
-            features = [
-                dp.flow_duration,
-                dp.flow_IAT_mean,
-                dp.flow_pkts_per_s,
-                dp.flow_bytes_per_s,
-                dp.pkts_len_mean
-            ]
-            temp_data.append((flow, features))
-
-        X = np.array([feat for _, feat in temp_data], dtype=float)
-        X_log = np.log2(X + 1)
-
-        labels, scores = algorithm.predict_with_score(rf, X_log)
-
-        print("\n=== RandomForest Prediction Results ===")
-        for (flow, _), label, score in zip(temp_data, labels, scores):
-            print(f"{flow:40s} -> {'Outlier' if label == -1 else 'Normal'} (score={score:.4f})")
-        print("=== END ===\n")
-
-        time.sleep(0.1)
+    except KeyboardInterrupt:
+        out_file = f"{model_name}_results.csv"
+        print(f"\n[INFO] Ctrl+C detected, saving results to {out_file} ...")
+        pd.DataFrame(results).to_csv(out_file, index=False)
+        print(f"[INFO] Saved {len(results)} predictions to {out_file}")
+        sys.exit(0)
 
 
 def main():
@@ -273,19 +153,11 @@ def main():
                         choices=["lof", "knn", "isoforest", "randforest"],
                         help="Choose one algorithm")
     parser.add_argument("--train_csv", type=str, default="/home/dongtv/dtuan/training_isolation/data.csv",
-                        help="Choose file CSV to Train isoforest or randforest")
+                        help="CSV file for training isoforest or randforest")
     
     args = parser.parse_args()
-    if args.model == "lof":
-        lof_run()
-    elif args.model == "knn":
-        knn_run()
-    elif args.model == "isoforest":
-        isoforest_run(args.train_csv)
-    elif args.model == "randforest":
-        randforest_run(args.train_csv)
-    else:
-        raise ValueError("Unknown model")
-    
+    run_model(args.model, args.train_csv if args.model in ["isoforest", "randforest"] else None)
+
+
 if __name__ == "__main__":
     main()
