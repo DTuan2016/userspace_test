@@ -9,7 +9,7 @@ from sklearn.ensemble import IsolationForest, RandomForestClassifier
 # ===========================
 # TRAIN FUNCTIONS
 # ===========================
-def train_knn(X: np.ndarray, k: int = 5, model_path: str = "knn_model.pkl"):
+def train_knn(X: np.ndarray, k: int = 5, model_path: str = "model/knn_model.pkl"):
     """
     Train KNN (NearestNeighbors).
     Chỉ dùng cho anomaly detection qua khoảng cách lân cận.
@@ -22,7 +22,7 @@ def train_knn(X: np.ndarray, k: int = 5, model_path: str = "knn_model.pkl"):
 
 
 def train_lof(X: np.ndarray, n_neighbors: int = 20, contamination: float = 0.1,
-              model_path: str = "lof_model.pkl"):
+              model_path: str = "model/lof_model.pkl"):
     """
     Train LOF (Local Outlier Factor).
     """
@@ -38,7 +38,7 @@ def train_lof(X: np.ndarray, n_neighbors: int = 20, contamination: float = 0.1,
 
 
 def train_isolation_forest(X: np.ndarray, contamination: float = 0.1,
-                           model_path: str = "isoforest_model.pkl"):
+                           model_path: str = "model/isoforest_model.pkl"):
     """
     Train Isolation Forest.
     """
@@ -54,7 +54,7 @@ def train_isolation_forest(X: np.ndarray, contamination: float = 0.1,
 
 
 def train_random_forest(X: np.ndarray, y: np.ndarray,
-                        model_path: str = "randforest_model.pkl"):
+                        model_path: str = "model/randforest_model.pkl"):
     """
     Train Random Forest supervised classification.
     y phải là label (vd: 0/1 hoặc BENIGN/PORTMAP).
@@ -65,7 +65,7 @@ def train_random_forest(X: np.ndarray, y: np.ndarray,
     print(f"[+] RandomForest trained and saved to {model_path}")
     return rf
 
-def process_isolation_forest(data_csv, contamination=0.1, model_path="isoforest_model.pkl"):
+def process_isolation_forest(data_csv, contamination=0.1, model_path="model/isoforest_model.pkl"):
     """
     Đọc CSV, lấy feature numeric, train Isolation Forest.
     """
@@ -93,7 +93,7 @@ def process_isolation_forest(data_csv, contamination=0.1, model_path="isoforest_
     return iso
 
 
-def process_random_forest(data_csv, label_col="Label", model_path="randforest_model.pkl"):
+def process_random_forest(data_csv, label_col="Label", model_path="model/randforest_model.pkl"):
     """
     Đọc CSV, lấy feature + label, train Random Forest (supervised classification).
     label_col: tên cột chứa nhãn (vd: "Label" với BENIGN / PORTMAP).
@@ -175,7 +175,7 @@ def load_model(path: str):
 
 
 def process_lof(data_csv, n_neighbors=20, contamination=0.1,
-                model_path="lof_model.pkl"):
+                model_path="model/lof_model.pkl"):
     """
     Đọc CSV, lấy feature, train LOF (dùng log2 transform).
     """

@@ -55,7 +55,7 @@ def run_model(model_name, train_csv=None):
         X_train_log = np.log2(X_train + 1)
 
         if model_name == "isoforest":
-            model = algorithm.train_isolation_forest(X_train_log, contamination=0.1)
+            model = algorithm.train_isolation_forest(X_train_log, contamination=0.01)
             print("[DEBUG] IsolationForest training complete from CSV.")
         else:  # randforest
             y_train = df["Label"]
@@ -74,7 +74,7 @@ def run_model(model_name, train_csv=None):
                 continue
 
             if not flows:
-                time.sleep(0.1)
+                time.sleep(1)
                 continue
 
             temp_data = []
@@ -106,7 +106,7 @@ def run_model(model_name, train_csv=None):
                     X_train = np.array(buffer_flows[:100], dtype=float)
                     X_train_log = np.log2(X_train + 1)
                     if model_name == "lof":
-                        model = algorithm.train_lof(X_train_log, n_neighbors=20, contamination=0.1)
+                        model = algorithm.train_lof(X_train_log, n_neighbors=5, contamination=0.01)
                     else:
                         model = algorithm.train_knn(X_train_log, k=5)
                     print(f"[DEBUG] {model_name.upper()} training complete. Now predicting new flows...")
@@ -116,7 +116,7 @@ def run_model(model_name, train_csv=None):
                     continue
 
             if not temp_data:
-                time.sleep(0.1)
+                time.sleep(1)
                 continue
 
             # Prediction
@@ -137,10 +137,10 @@ def run_model(model_name, train_csv=None):
                         "Score": score
                     })
             print("=== END ===\n")
-            time.sleep(0.1)
+            time.sleep(1)
 
     except KeyboardInterrupt:
-        out_file = f"{model_name}_results.csv"
+        out_file = f"results/{model_name}_results.csv"
         print(f"\n[INFO] Ctrl+C detected, saving results to {out_file} ...")
         pd.DataFrame(results).to_csv(out_file, index=False)
         print(f"[INFO] Saved {len(results)} predictions to {out_file}")
