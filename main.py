@@ -159,7 +159,7 @@ def main():
     parser.add_argument("--model", type=str, required=True,
                         choices=["lof", "knn", "isoforest", "randforest", "svm"],
                         help="Choose one algorithm")
-    parser.add_argument("--train_csv", type=str, default="/home/dongtv/dtuan/training_isolation/data.csv",
+    parser.add_argument("--train_csv", type=str, default="/home/dongtv/userspace_test/data/data.csv",
                         help="CSV file for training isoforest, randforest, or svm")
 
     args = parser.parse_args()
