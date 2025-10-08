@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 import numpy as np
 import pandas as pd
-import joblib
+import joblib, os
 from sklearn.neighbors import NearestNeighbors, LocalOutlierFactor
 from sklearn.ensemble import IsolationForest, RandomForestClassifier
-
+from sklearn.svm import LinearSVC
 
 # ===========================
 # TRAIN FUNCTIONS
@@ -64,6 +64,48 @@ def train_random_forest(X: np.ndarray, y: np.ndarray,
     joblib.dump(rf, model_path)
     print(f"[+] RandomForest trained and saved to {model_path}")
     return rf
+
+def train_linear_svm(X: np.ndarray, y: np.ndarray,
+                     C: float = 1.0,
+                     max_iter: int = 5000,
+                     model_path: str = "model/linear_svm.pkl"):
+
+    model = LinearSVC(C=C, max_iter=max_iter, random_state=42)
+    model.fit(X, y)
+
+    # os.makedirs(os.path.dirname(model_path), exist_ok=True)
+    joblib.dump(model, model_path)
+    print(f"[+] LinearSVM trained and saved to {model_path}")
+    return model
+
+# def train_cnn(X: np.ndarray, y: np.ndarray, model_path="model/cnn_model.h5",
+#               epochs=20, batch_size=32, learning_rate=0.001):
+#     """
+#     Training simple 1D CNN cho classification
+#     """
+
+def process_linear_svm(data_csv, label_col="Label", model_path="model/linear_svm.pkl"):
+    """
+    Read CSV, get feature and label, train LinearSVM.
+    """
+    df = pd.read_csv(data_csv)
+    feature_columns = [
+        "FlowDuration",
+        "FlowIATMean",
+        "FlowPktsPerSec",
+        "FlowBytesPerSec",
+        "PktLenMean"
+    ]
+
+    if not all(col in df.columns for col in feature_columns + [label_col]):
+        missing = [c for c in feature_columns + [label_col] if c not in df.columns]
+        raise ValueError(f"[ERROR] CSV missing columns: {missing}")
+
+    X = df.loc[:, feature_columns].values.astype(float)
+    y = df[label_col].values
+    X_log = np.log2(X + 1)
+
+    return train_linear_svm(X_log, y, model_path=model_path)
 
 def process_isolation_forest(data_csv, contamination=0.1, model_path="model/isoforest_model.pkl"):
     """
@@ -161,10 +203,17 @@ def predict_with_score(model, X: np.ndarray, threshold: float = None):
         # Score = xác suất của class dự đoán
         scores = np.max(probs, axis=1)
         return labels, scores
-
+    
+    # --- Support Vector Machine ---
+    elif isinstance(model, LinearSVC):
+        scores = model.decision_function(X)
+        labels = model.predict(X)
+        # Ép kiểu về mảng float 1D (tránh lỗi khi in f"{score:.4f}")
+        scores = np.array(scores, dtype=float).reshape(-1)
+        return labels, scores
+    
     else:
         raise ValueError(f"Unsupported model type: {type(model)}")
-
 
 # ===========================
 # UTILITIES

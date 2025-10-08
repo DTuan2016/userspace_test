@@ -32,7 +32,6 @@ def parse_flow(flow_str):
         print(f"[ERROR] Cannot parse flow '{flow_str}': {e}")
         return None
 
-
 def run_model(model_name, train_csv=None):
     """
     Hàm tổng quát cho tất cả các model
@@ -46,9 +45,10 @@ def run_model(model_name, train_csv=None):
 
     model = None
 
-    if model_name in ["isoforest", "randforest"]:
+    if model_name in ["isoforest", "randforest", "svm"]:
         if train_csv is None:
             raise ValueError("train_csv is required for isoforest or randforest")
+        
         df = pd.read_csv(train_csv)
         feature_columns = ["FlowDuration", "FlowIATMean", "FlowPktsPerSec", "FlowBytesPerSec", "PktLenMean"]
         X_train = df[feature_columns].astype(float).values
@@ -57,9 +57,13 @@ def run_model(model_name, train_csv=None):
         if model_name == "isoforest":
             model = algorithm.train_isolation_forest(X_train_log, contamination=0.01)
             print("[DEBUG] IsolationForest training complete from CSV.")
-        else:  # randforest
+        elif model_name == "randforest":  # randforest
             y_train = df["Label"]
             model = algorithm.train_random_forest(X_train_log, y_train)
+            print("[DEBUG] RandomForest training complete from CSV.")
+        elif model_name == "svm":  # randforest
+            y_train = df["Label"]
+            model = algorithm.train_linear_svm(X_train_log, y_train)
             print("[DEBUG] RandomForest training complete from CSV.")
     else:
         print(f"[DEBUG] Waiting for 100 unique flows to train ({model_name.upper()})...")
@@ -129,12 +133,15 @@ def run_model(model_name, train_csv=None):
             for (flow_tuple, _), label, score in zip(temp_data, labels, scores):
                 if flow_tuple not in printed_flows:
                     src_ip, src_port, dst_ip, dst_port, proto = flow_tuple
-                    print(f"{src_ip}:{src_port} -> {dst_ip}:{dst_port} proto={proto} -> {'Outlier' if label==-1 else 'Normal'} (score={score:.4f})")
+                    lbl_str = "Outlier" if label == -1 else str(label)
+                    if lbl_str.lower() in ["benign", "normal"]:
+                        lbl_str = "Normal"
+                    print(f"{src_ip}:{src_port} -> {dst_ip}:{dst_port} proto={proto} -> {lbl_str} (score={float(np.mean(score)):.4f})")
                     printed_flows.add(flow_tuple)
                     results.append({
                         "Flow": f"{src_ip},{src_port},{dst_ip},{dst_port},{proto}",
-                        "Label": "Outlier" if label == -1 else "Normal",
-                        "Score": score
+                        "Label": lbl_str,
+                        "Score": float(np.mean(score))
                     })
             print("=== END ===\n")
             time.sleep(1)
@@ -150,14 +157,13 @@ def run_model(model_name, train_csv=None):
 def main():
     parser = argparse.ArgumentParser(description="Run anomaly detection models")
     parser.add_argument("--model", type=str, required=True,
-                        choices=["lof", "knn", "isoforest", "randforest"],
+                        choices=["lof", "knn", "isoforest", "randforest", "svm"],
                         help="Choose one algorithm")
     parser.add_argument("--train_csv", type=str, default="/home/dongtv/dtuan/training_isolation/data.csv",
-                        help="CSV file for training isoforest or randforest")
-    
-    args = parser.parse_args()
-    run_model(args.model, args.train_csv if args.model in ["isoforest", "randforest"] else None)
+                        help="CSV file for training isoforest, randforest, or svm")
 
+    args = parser.parse_args()
+    run_model(args.model, args.train_csv if args.model in ["isoforest", "randforest", "svm"] else None)
 
 if __name__ == "__main__":
     main()
