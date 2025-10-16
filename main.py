@@ -10,9 +10,9 @@ from algorithm import (
     train_linear_svm,
     train_lof,
     train_knn,
-    predict_cnn_torch,
+    predict_mlp_torch,
     predict_with_score,
-    process_cnn_torch,
+    process_mlp_torch,
 )
 
 def parse_flow(flow_str):
@@ -71,16 +71,16 @@ def run_model(model_name, train_csv=None):
             y_train = df["Label"]
             model = train_linear_svm(X_train_log, y_train)
             print("[DEBUG] Linear SVM training complete from CSV.")
-        elif model_name == "cnn":
-            model_path = "model/cnn.pth"
-            print("[DEBUG] Training CNN (PyTorch) from CSV...")
-            model = process_cnn_torch(
+        elif model_name == "mlp":
+            model_path = "model/mlp.pth"
+            print("[DEBUG] Training MLP (PyTorch) from CSV...")
+            model = process_mlp_torch(
                 data_csv=train_csv,
                 model_path=model_path,
                 epochs=10,
                 device="cpu"
             )
-            print("[DEBUG] CNN (PyTorch) training complete.")
+            print("[DEBUG] MLP (PyTorch) training complete.")
     else:
         print(f"[DEBUG] Waiting for 100 unique flows to train ({model_name.upper()})...")
 
@@ -143,8 +143,8 @@ def run_model(model_name, train_csv=None):
             X = np.array([feat for _, feat in temp_data], dtype=float)
             X_log = np.log2(X + 1)
 
-            if model_name == "cnn":
-                labels, scores = predict_cnn_torch(model, X_log, model_path="model/cnn.pth")
+            if model_name == "mlp":
+                labels, scores = predict_mlp_torch(model, X_log, model_path="model/mlp.pth")
             else:
                 labels, scores = predict_with_score(model, X_log)
 
@@ -175,14 +175,14 @@ def main():
     print("[DEBUG] main() started") 
     parser = argparse.ArgumentParser(description="Run anomaly detection models")
     parser.add_argument("--model", type=str, required=True,
-                        choices=["lof", "knn", "isoforest", "randforest", "svm", "cnn"],
+                        choices=["lof", "knn", "isoforest", "randforest", "svm", "mlp"],
                         help="Choose one algorithm")
     parser.add_argument("--train_csv", type=str,
                         default="/home/lanforge/userspace_test/data/data.csv",
-                        help="CSV file for training (required for isoforest, randforest, svm, cnn)")
+                        help="CSV file for training (required for isoforest, randforest, svm, mlp)")
 
     args = parser.parse_args()
-    run_model(args.model, args.train_csv if args.model in ["isoforest", "randforest", "svm", "cnn"] else None)
+    run_model(args.model, args.train_csv if args.model in ["isoforest", "randforest", "svm", "mlp"] else None)
     
 if __name__ == "__main__":
     main()
