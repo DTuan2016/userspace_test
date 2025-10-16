@@ -1,11 +1,19 @@
 import numpy as np
 import pandas as pd
 from read_map import read_flows
-import algorithm
-
 import time
 import argparse
 import sys
+from algorithm import (
+    train_isolation_forest,
+    train_random_forest,
+    train_linear_svm,
+    train_lof,
+    train_knn,
+    predict_cnn_torch,
+    predict_with_score,
+    process_cnn_torch,
+)
 
 def parse_flow(flow_str):
     """
@@ -34,37 +42,45 @@ def parse_flow(flow_str):
 
 def run_model(model_name, train_csv=None):
     """
-    Hàm tổng quát cho tất cả các model
+    Hàm tổng quát cho tất cả các model, bao gồm CNN (PyTorch)
     """
-    map_path = "/sys/fs/bpf/eno3/xdp_flow_tracking"
+    print(f"[DEBUG] run_model() called with model={model_name}, train_csv={train_csv}")
 
-    buffer_flows = []
-    seen_flows = set()
-    printed_flows = set()
-    results = []
-
+    map_path = "/sys/fs/bpf/enp1s0f0/xdp_flow_tracking"
+    buffer_flows, seen_flows, printed_flows, results = [], set(), set(), []
     model = None
 
-    if model_name in ["isoforest", "randforest", "svm"]:
+    # --- Khối train cho các model có sẵn ---
+    if model_name in ["isoforest", "randforest", "svm", "cnn"]:
         if train_csv is None:
-            raise ValueError("train_csv is required for isoforest or randforest")
-        
+            raise ValueError("train_csv is required for isoforest, randforest, svm, or cnn")
+
         df = pd.read_csv(train_csv)
         feature_columns = ["FlowDuration", "FlowIATMean", "FlowPktsPerSec", "FlowBytesPerSec", "PktLenMean"]
         X_train = df[feature_columns].astype(float).values
         X_train_log = np.log2(X_train + 1)
 
         if model_name == "isoforest":
-            model = algorithm.train_isolation_forest(X_train_log, contamination=0.01)
+            model = train_isolation_forest(X_train_log, contamination=0.01)
             print("[DEBUG] IsolationForest training complete from CSV.")
-        elif model_name == "randforest":  # randforest
+        elif model_name == "randforest":
             y_train = df["Label"]
-            model = algorithm.train_random_forest(X_train_log, y_train)
+            model = train_random_forest(X_train_log, y_train)
             print("[DEBUG] RandomForest training complete from CSV.")
-        elif model_name == "svm":  # randforest
+        elif model_name == "svm":
             y_train = df["Label"]
-            model = algorithm.train_linear_svm(X_train_log, y_train)
-            print("[DEBUG] RandomForest training complete from CSV.")
+            model = train_linear_svm(X_train_log, y_train)
+            print("[DEBUG] Linear SVM training complete from CSV.")
+        elif model_name == "cnn":
+            model_path = "model/cnn.pth"
+            print("[DEBUG] Training CNN (PyTorch) from CSV...")
+            model = process_cnn_torch(
+                data_csv=train_csv,
+                model_path=model_path,
+                epochs=10,
+                device="cpu"
+            )
+            print("[DEBUG] CNN (PyTorch) training complete.")
     else:
         print(f"[DEBUG] Waiting for 100 unique flows to train ({model_name.upper()})...")
 
@@ -110,9 +126,9 @@ def run_model(model_name, train_csv=None):
                     X_train = np.array(buffer_flows[:100], dtype=float)
                     X_train_log = np.log2(X_train + 1)
                     if model_name == "lof":
-                        model = algorithm.train_lof(X_train_log, n_neighbors=5, contamination=0.01)
+                        model = train_lof(X_train_log, n_neighbors=5, contamination=0.01)
                     else:
-                        model = algorithm.train_knn(X_train_log, k=5)
+                        model = train_knn(X_train_log, k=5)
                     print(f"[DEBUG] {model_name.upper()} training complete. Now predicting new flows...")
                 else:
                     print(f"[DEBUG] Collected {len(buffer_flows)}/100 unique flows so far...")
@@ -123,19 +139,20 @@ def run_model(model_name, train_csv=None):
                 time.sleep(1)
                 continue
 
-            # Prediction
+            # --- Prediction ---
             X = np.array([feat for _, feat in temp_data], dtype=float)
             X_log = np.log2(X + 1)
 
-            labels, scores = algorithm.predict_with_score(model, X_log)
+            if model_name == "cnn":
+                labels, scores = predict_cnn_torch(model, X_log, model_path="model/cnn.pth")
+            else:
+                labels, scores = predict_with_score(model, X_log)
 
             print(f"\n=== {model_name.upper()} Prediction Results ===")
             for (flow_tuple, _), label, score in zip(temp_data, labels, scores):
                 if flow_tuple not in printed_flows:
                     src_ip, src_port, dst_ip, dst_port, proto = flow_tuple
-                    lbl_str = "Outlier" if label == -1 else str(label)
-                    if lbl_str.lower() in ["benign", "normal"]:
-                        lbl_str = "Normal"
+                    lbl_str = "Outlier" if str(label).lower() in ["-1", "outlier"] else "Normal"
                     print(f"{src_ip}:{src_port} -> {dst_ip}:{dst_port} proto={proto} -> {lbl_str} (score={float(np.mean(score)):.4f})")
                     printed_flows.add(flow_tuple)
                     results.append({
@@ -155,15 +172,17 @@ def run_model(model_name, train_csv=None):
 
 
 def main():
+    print("[DEBUG] main() started") 
     parser = argparse.ArgumentParser(description="Run anomaly detection models")
     parser.add_argument("--model", type=str, required=True,
-                        choices=["lof", "knn", "isoforest", "randforest", "svm"],
+                        choices=["lof", "knn", "isoforest", "randforest", "svm", "cnn"],
                         help="Choose one algorithm")
-    parser.add_argument("--train_csv", type=str, default="/home/dongtv/userspace_test/data/data.csv",
-                        help="CSV file for training isoforest, randforest, or svm")
+    parser.add_argument("--train_csv", type=str,
+                        default="/home/lanforge/userspace_test/data/data.csv",
+                        help="CSV file for training (required for isoforest, randforest, svm, cnn)")
 
     args = parser.parse_args()
-    run_model(args.model, args.train_csv if args.model in ["isoforest", "randforest", "svm"] else None)
-
+    run_model(args.model, args.train_csv if args.model in ["isoforest", "randforest", "svm", "cnn"] else None)
+    
 if __name__ == "__main__":
     main()

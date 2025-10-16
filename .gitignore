@@ -3,3 +3,11 @@
 __pycache__/
 
 results/
+
+log_bpf/
+
+userspace_log/
+
+xdp_stats/
+
+autorun.log
