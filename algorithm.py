@@ -4,6 +4,7 @@ import pandas as pd
 import joblib, os
 from sklearn.neighbors import NearestNeighbors, LocalOutlierFactor
 from sklearn.ensemble import IsolationForest, RandomForestClassifier
+from sklearn.preprocessing import MinMaxScaler
 from sklearn.svm import LinearSVC
 import torch
 import torch.nn as nn
@@ -13,14 +14,13 @@ from torch.utils.data import TensorDataset, DataLoader
 class SimpleMLP(nn.Module):
     def __init__(self, num_features: int, num_classes: int):
         super(SimpleMLP, self).__init__()
-        self.fc1 = nn.Linear(num_features, num_classes)  # 1 lớp Linear duy nhất
-        self.relu = nn.ReLU()
+        self.fc1 = nn.Linear(num_features, num_classes)
         self.softmax = nn.Softmax(dim=1)
 
     def forward(self, x):
-        # Input shape: (batch, num_features)
-        x = self.relu(self.fc1(x))
-        return self.softmax(x)
+        logits = self.fc1(x)     
+        probs =  self.softmax(logits)
+        return probs
     
 # ======== TRAINING ========
 def train_mlp_torch(X: np.ndarray, y: np.ndarray,
@@ -85,36 +85,36 @@ def train_mlp_torch(X: np.ndarray, y: np.ndarray,
     return model_cpu
 
 
-# ======== TIỀN XỬ LÝ + TRAIN ========
-def process_mlp_torch(data_csv, label_col="Label",
-                      model_path="model/mlp_torch.pth",
-                      epochs: int = 20, batch_size: int = 32, lr: float = 1e-3,
-                      device: str = "cpu"):
-    """
-    Read CSV, pick feature columns, log2 transform, then call train_mlp_torch().
-    Returns trained model (nn.Module on CPU).
-    """
-    df = pd.read_csv(data_csv)
-    feature_columns = [
-        "FlowDuration",
-        "FlowIATMean",
-        "FlowPktsPerSec",
-        "FlowBytesPerSec",
-        "PktLenMean"
-    ]
-    if not all(col in df.columns for col in feature_columns + [label_col]):
-        missing = [c for c in feature_columns + [label_col] if c not in df.columns]
-        raise ValueError(f"[ERROR] CSV missing columns: {missing}")
+# # ======== TIỀN XỬ LÝ + TRAIN ========
+# def process_mlp_torch(data_csv, label_col="Label",
+#                       model_path="model/mlp_torch.pth",
+#                       epochs: int = 20, batch_size: int = 32, lr: float = 1e-3,
+#                       device: str = "cpu"):
+#     """
+#     Read CSV, pick feature columns, log2 transform, then call train_mlp_torch().
+#     Returns trained model (nn.Module on CPU).
+#     """
+#     df = pd.read_csv(data_csv)
+#     feature_columns = [
+#         "FlowDuration",
+#         "FlowIATMean",
+#         "FlowPktsPerSec",
+#         "FlowBytesPerSec",
+#         "PktLenMean"
+#     ]
+#     if not all(col in df.columns for col in feature_columns + [label_col]):
+#         missing = [c for c in feature_columns + [label_col] if c not in df.columns]
+#         raise ValueError(f"[ERROR] CSV missing columns: {missing}")
 
-    X = df.loc[:, feature_columns].values.astype(float)
-    y = df[label_col].values
-    if X.shape[0] == 0:
-        raise ValueError("No numeric data in CSV to train")
+#     X = df.loc[:, feature_columns].values.astype(float)
+#     y = df[label_col].values
+#     if X.shape[0] == 0:
+#         raise ValueError("No numeric data in CSV to train")
 
-    X_log = np.log2(X + 1)
-    model = train_mlp_torch(X_log, y, model_path=model_path,
-                            epochs=epochs, batch_size=batch_size, lr=lr, device=device)
-    return model
+#     X_log = np.log2(X + 1)
+#     model = train_mlp_torch(X_log, y, model_path=model_path,
+#                             epochs=epochs, batch_size=batch_size, lr=lr, device=device)
+#     return model
 
 
 # ======== DỰ ĐOÁN ========
@@ -216,7 +216,7 @@ def train_random_forest(X: np.ndarray, y: np.ndarray,
     Train Random Forest supervised classification.
     y phải là label (vd: 0/1 hoặc BENIGN/PORTMAP).
     """
-    rf = RandomForestClassifier(n_estimators=100, random_state=42)
+    rf = RandomForestClassifier(n_estimators=60, random_state=42, min_samples_split=2, max_depth=8, criterion='gini', bootstrap=True, max_samples=512)
     rf.fit(X, y)
     joblib.dump(rf, model_path)
     print(f"[+] RandomForest trained and saved to {model_path}")
@@ -235,11 +235,39 @@ def train_linear_svm(X: np.ndarray, y: np.ndarray,
     print(f"[+] LinearSVM trained and saved to {model_path}")
     return model
 
-# def train_cnn(X: np.ndarray, y: np.ndarray, model_path="model/cnn_model.h5",
-#               epochs=20, batch_size=32, learning_rate=0.001):
-#     """
-#     Training simple 1D CNN cho classification
-#     """
+def process_mlp_torch(df, label_col="Label",
+                      model_path="model/mlp_torch.pth",
+                      epochs: int = 20, batch_size: int = 32, lr: float = 1e-3,
+                      device: str = "cpu"):
+    """
+    Đọc CSV, lấy 5 feature chính, log2 + MinMaxScaler, rồi train MLP.
+    """
+    feature_columns = [
+        "FlowDuration",
+        "FlowPktsPerSec",
+        "FlowBytesPerSec",
+        "FlowIATMean",
+        "PktLenMean"
+    ]
+
+    if not all(col in df.columns for col in feature_columns + [label_col]):
+        missing = [c for c in feature_columns + [label_col] if c not in df.columns]
+        raise ValueError(f"[ERROR] CSV missing columns: {missing}")
+
+    X = df.loc[:, feature_columns].values.astype(float)
+    y = df[label_col].values
+    if X.shape[0] == 0:
+        raise ValueError("No numeric data in CSV to train")
+
+    X_log = np.log2(X + 1)
+    scaler = MinMaxScaler()
+    X_scaled = scaler.fit_transform(X_log)
+
+    model = train_mlp_torch(X_scaled, y, model_path=model_path,
+                            epochs=epochs, batch_size=batch_size, lr=lr, device=device)
+    joblib.dump(scaler, model_path + ".scaler.pkl")  # save scaler
+    return model
+
 
 def process_linear_svm(data_csv, label_col="Label", model_path="model/linear_svm.pkl"):
     """
@@ -254,73 +282,99 @@ def process_linear_svm(data_csv, label_col="Label", model_path="model/linear_svm
         "PktLenMean"
     ]
 
-    if not all(col in df.columns for col in feature_columns + [label_col]):
-        missing = [c for c in feature_columns + [label_col] if c not in df.columns]
-        raise ValueError(f"[ERROR] CSV missing columns: {missing}")
+    # Map BENIGN -> 1, PortMap -> 0, loại bỏ nhãn khác
+    df[label_col] = df[label_col].map({"BENIGN": 1, "PortMap": 0})
+    df = df.dropna(subset=[label_col])
+    df[label_col] = df[label_col].astype(int)
 
     X = df.loc[:, feature_columns].values.astype(float)
     y = df[label_col].values
-    X_log = np.log2(X + 1)
 
-    return train_linear_svm(X_log, y, model_path=model_path)
+    # Kiểm tra số lượng class
+    if len(np.unique(y)) < 2:
+        print("[WARN] LinearSVM: chỉ có 1 class duy nhất, bỏ qua training.")
+        return None
+
+    X_log = np.log2(X + 1)
+    scaler = MinMaxScaler()
+    X_scaled = scaler.fit_transform(X_log)
+
+    return train_linear_svm(X_scaled, y, model_path=model_path)
+
 
 def process_isolation_forest(data_csv, contamination=0.1, model_path="model/isoforest_model.pkl"):
     """
-    Đọc CSV, lấy feature numeric, train Isolation Forest.
+    Đọc CSV, log2 + MinMaxScaler, train IsolationForest.
     """
     df = pd.read_csv(data_csv)
-
     feature_columns = [
-        "FlowDuration",
-        "FlowIATMean",
-        "FlowPktsPerSec",
-        "FlowBytesPerSec",
+        "FlowDuration", "FlowIATMean",
+        "FlowPktsPerSec", "FlowBytesPerSec",
         "PktLenMean"
     ]
-
     if not all(col in df.columns for col in feature_columns):
         missing = [c for c in feature_columns if c not in df.columns]
         raise ValueError(f"[ERROR] CSV thiếu cột: {missing}")
 
     X = df.loc[:, feature_columns].values.astype(float)
-    if X.shape[0] == 0:
-        raise ValueError("Không có dữ liệu numeric trong CSV để train")
-
     X_log = np.log2(X + 1)
+    scaler = MinMaxScaler()
+    X_scaled = scaler.fit_transform(X_log)
 
-    iso = train_isolation_forest(X_log, contamination=contamination, model_path=model_path)
+    iso = train_isolation_forest(X_scaled, contamination=contamination, model_path=model_path)
+    joblib.dump(scaler, model_path + ".scaler.pkl")
     return iso
 
 
 def process_random_forest(data_csv, label_col="Label", model_path="model/randforest_model.pkl"):
     """
-    Đọc CSV, lấy feature + label, train Random Forest (supervised classification).
-    label_col: tên cột chứa nhãn (vd: "Label" với BENIGN / PORTMAP).
+    Đọc CSV, log2 + MinMaxScaler, train Random Forest.
     """
     df = pd.read_csv(data_csv)
-
     feature_columns = [
-        "FlowDuration",
-        "FlowIATMean",
-        "FlowPktsPerSec",
-        "FlowBytesPerSec",
+        "FlowDuration", "FlowIATMean",
+        "FlowPktsPerSec", "FlowBytesPerSec",
         "PktLenMean"
     ]
-
     if not all(col in df.columns for col in feature_columns + [label_col]):
         missing = [c for c in feature_columns + [label_col] if c not in df.columns]
         raise ValueError(f"[ERROR] CSV thiếu cột: {missing}")
 
     X = df.loc[:, feature_columns].values.astype(float)
     y = df[label_col].values
-
-    if X.shape[0] == 0:
-        raise ValueError("Không có dữ liệu numeric trong CSV để train")
-
     X_log = np.log2(X + 1)
+    scaler = MinMaxScaler()
+    X_scaled = scaler.fit_transform(X_log)
 
-    rf = train_random_forest(X_log, y, model_path=model_path)
+    rf = train_random_forest(X_scaled, y, model_path=model_path)
+    joblib.dump(scaler, model_path + ".scaler.pkl")
     return rf
+
+
+def process_lof(data_csv, n_neighbors=20, contamination=0.1,
+                model_path="model/lof_model.pkl"):
+    """
+    Đọc CSV, log2 + MinMaxScaler, train LOF (Local Outlier Factor).
+    """
+    df = pd.read_csv(data_csv)
+    feature_columns = [
+        "FlowDuration", "FlowIATMean",
+        "FlowPktsPerSec", "FlowBytesPerSec",
+        "PktLenMean"
+    ]
+    if not all(col in df.columns for col in feature_columns):
+        missing = [c for c in feature_columns if c not in df.columns]
+        raise ValueError(f"[ERROR] CSV thiếu cột: {missing}")
+
+    X = df.loc[:, feature_columns].values.astype(float)
+    X_log = np.log2(X + 1)
+    scaler = MinMaxScaler()
+    X_scaled = scaler.fit_transform(X_log)
+
+    lof = train_lof(X_scaled, n_neighbors=n_neighbors,
+                    contamination=contamination, model_path=model_path)
+    joblib.dump(scaler, model_path + ".scaler.pkl")
+    return lof
 
 # ===========================
 # PREDICT FUNCTIONS
@@ -379,31 +433,30 @@ def load_model(path: str):
     """Load model từ file .pkl"""
     return joblib.load(path)
 
+# def process_lof(data_csv, n_neighbors=20, contamination=0.1,
+#                 model_path="model/lof_model.pkl"):
+#     """
+#     Đọc CSV, lấy feature, train LOF (dùng log2 transform).
+#     """
+#     df = pd.read_csv(data_csv)
+#     feature_columns = [
+#         "FlowDuration",
+#         "FlowIATMean",
+#         "FlowPktsPerSec",
+#         "FlowBytesPerSec",
+#         "PktLenMean"
+#     ]
 
-def process_lof(data_csv, n_neighbors=20, contamination=0.1,
-                model_path="model/lof_model.pkl"):
-    """
-    Đọc CSV, lấy feature, train LOF (dùng log2 transform).
-    """
-    df = pd.read_csv(data_csv)
-    feature_columns = [
-        "FlowDuration",
-        "FlowIATMean",
-        "FlowPktsPerSec",
-        "FlowBytesPerSec",
-        "PktLenMean"
-    ]
+#     if not all(col in df.columns for col in feature_columns):
+#         missing = [c for c in feature_columns if c not in df.columns]
+#         raise ValueError(f"[ERROR] CSV thiếu cột: {missing}")
 
-    if not all(col in df.columns for col in feature_columns):
-        missing = [c for c in feature_columns if c not in df.columns]
-        raise ValueError(f"[ERROR] CSV thiếu cột: {missing}")
+#     X = df.loc[:, feature_columns].values.astype(float)
+#     if X.shape[0] == 0:
+#         raise ValueError("Không có dữ liệu numeric trong CSV để train")
 
-    X = df.loc[:, feature_columns].values.astype(float)
-    if X.shape[0] == 0:
-        raise ValueError("Không có dữ liệu numeric trong CSV để train")
+#     X_log = np.log2(X + 1)
 
-    X_log = np.log2(X + 1)
-
-    lof = train_lof(X_log, n_neighbors=n_neighbors,
-                    contamination=contamination, model_path=model_path)
-    return lof
+#     lof = train_lof(X_log, n_neighbors=n_neighbors,
+#                     contamination=contamination, model_path=model_path)
+#     return lof
